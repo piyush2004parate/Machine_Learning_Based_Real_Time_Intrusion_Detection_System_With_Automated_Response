@@ -1,0 +1,13 @@
+{% extends "admin/change_list.html" %}
+
+{% block object-tools %}
+  {{ block.super }}
+  <ul class="object-tools">
+    <li>
+      <a href="{% url 'admin:api_networktraffic_clear' %}" class="deletelink" onclick="return confirm('Delete all traffic records? This cannot be undone.');">Clear all traffic</a>
+    </li>
+  </ul>
+{% endblock %}
+
+
+

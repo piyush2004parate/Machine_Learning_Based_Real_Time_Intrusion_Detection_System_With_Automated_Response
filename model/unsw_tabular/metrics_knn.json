@@ -1,0 +1,36 @@
+{
+  "accuracy": 0.93407282785366,
+  "precision": 0.9381393083292743,
+  "recall": 0.9670292887029289,
+  "f1": 0.9523652546563376,
+  "confusion_matrix": [
+    [
+      9645,
+      1524
+    ],
+    [
+      788,
+      23112
+    ]
+  ],
+  "selected_features": [
+    "dur",
+    "dpkts",
+    "sbytes",
+    "dbytes",
+    "rate",
+    "sttl",
+    "dttl",
+    "sload",
+    "dload",
+    "sinpkt",
+    "dinpkt",
+    "sjit",
+    "tcprtt",
+    "synack",
+    "ackdat",
+    "smean",
+    "dmean",
+    "ct_state_ttl"
+  ]
+}

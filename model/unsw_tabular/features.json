@@ -1,0 +1,22 @@
+{
+  "predictors": [
+    "dur",
+    "dpkts",
+    "sbytes",
+    "dbytes",
+    "rate",
+    "sttl",
+    "dttl",
+    "sload",
+    "dload",
+    "sinpkt",
+    "dinpkt",
+    "sjit",
+    "tcprtt",
+    "synack",
+    "ackdat",
+    "smean",
+    "dmean",
+    "ct_state_ttl"
+  ]
+}

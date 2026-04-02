@@ -1,0 +1,15 @@
+{
+  "dependencies": {
+    "@types/react": "^19.1.13",
+    "axios": "^1.12.2",
+    "date-fns": "^4.1.0",
+    "lucide-react": "^0.544.0",
+    "react": "^19.1.1",
+    "recharts": "^3.2.1"
+  },
+  "devDependencies": {
+    "@types/axios": "^0.9.36",
+    "@types/date-fns": "^2.5.3",
+    "@types/recharts": "^1.8.29"
+  }
+}
