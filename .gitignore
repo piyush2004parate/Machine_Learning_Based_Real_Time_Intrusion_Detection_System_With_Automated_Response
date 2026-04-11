@@ -23,3 +23,34 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# Large ML model & scaler files (exceed GitHub's 100MB limit)
+*.pkl
+*.h5
+*.pt
+*.pth
+*.onnx
+
+# Large dataset CSV files
+*.csv
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Diagnostic images
+learning_curve.png
+
+# SQLite DB (generated at runtime)
+*.sqlite3
