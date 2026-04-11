@@ -28,27 +28,27 @@ export const Logs: React.FC = () => {
   }, [showToast]);
 
   const getSeverityBadge = (severity: LogEntry['severity']) => {
-    const colors = {
-      Info: 'bg-blue-500',
-      Warning: 'bg-yellow-500',
-      Error: 'bg-red-500',
+    const styles: Record<string, string> = {
+      Info: 'bg-blue-500/20 text-blue-400 border border-blue-500/30',
+      Warning: 'bg-amber-500/20 text-amber-500 border border-amber-500/30',
+      Error: 'bg-red-500/20 text-red-500 border border-red-500/50 shadow-[0_0_8px_rgba(239,68,68,0.4)]',
     };
 
     return (
-      <span className={`px-2 py-1 rounded-full text-xs font-medium text-white ${colors[severity]}`}>
+      <span className={`px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider shadow-sm ${styles[severity]}`}>
         {severity}
       </span>
     );
   };
 
   const getResultBadge = (result: LogEntry['result']) => {
-    const colors = {
-      Success: 'bg-green-500',
-      Failed: 'bg-red-500',
+    const styles: Record<string, string> = {
+      Success: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shadow-[0_0_8px_rgba(16,185,129,0.3)]',
+      Failed: 'bg-red-500/20 text-red-500 border border-red-500/30',
     };
 
     return (
-      <span className={`px-2 py-1 rounded-full text-xs font-medium text-white ${colors[result]}`}>
+      <span className={`px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider shadow-sm ${styles[result]}`}>
         {result}
       </span>
     );
@@ -108,7 +108,7 @@ export const Logs: React.FC = () => {
       key: 'target' as keyof LogEntry,
       header: 'Target',
       render: (item: LogEntry) => (
-        <span className="font-mono text-sm">{item.target}</span>
+        <span className="font-mono text-[13px] text-cyan-400/80 max-w-[150px] truncate block" title={item.target}>{item.target}</span>
       ),
       sortable: true,
     },
@@ -128,7 +128,7 @@ export const Logs: React.FC = () => {
       key: 'details' as keyof LogEntry,
       header: 'Details',
       render: (item: LogEntry) => (
-        <span className="text-sm text-gray-300 max-w-xs truncate">
+        <span className="text-[13px] text-gray-400 max-w-[200px] truncate block" title={item.details}>
           {item.details}
         </span>
       ),
@@ -140,46 +140,47 @@ export const Logs: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-white">Logs & Reports</h2>
-          <p className="text-gray-400">Security event logs and system activities</p>
+          <h2 className="text-[24px] font-bold text-white tracking-tight flex items-center gap-3">Logs & Reports</h2>
+          <p className="text-sm text-gray-400 mt-1 font-medium tracking-wide">Security event logs and system activities</p>
         </div>
 
         <button
           onClick={handleExportCSV}
-          className="flex items-center space-x-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
+          className="flex items-center space-x-2 px-5 py-2.5 bg-emerald-600/20 hover:bg-emerald-500/30 text-emerald-400 border border-emerald-500/30 rounded-lg shadow-[0_0_15px_rgba(16,185,129,0.2)] transition-all font-semibold text-sm hover:-translate-y-0.5"
         >
           <Download className="h-4 w-4" />
           <span>Export CSV</span>
         </button>
       </div>
 
-      <div className="bg-gray-800 rounded-lg border border-gray-700 p-6">
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-lg font-semibold text-white">Security Logs</h3>
-          <div className="flex items-center space-x-4">
-            <div className="flex items-center space-x-2">
-              <Calendar className="h-4 w-4 text-gray-400" />
+      <div className="bg-gray-900/60 backdrop-blur-xl rounded-2xl border border-gray-700/50 p-6 shadow-2xl">
+        <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between mb-6 gap-4">
+          <h3 className="text-lg font-bold text-white tracking-wide">Security Logs</h3>
+          
+          <div className="flex flex-wrap items-center gap-3 bg-gray-800/50 p-2 rounded-xl border border-gray-700/50 shadow-inner">
+            <div className="flex items-center space-x-2 px-2 border-r border-gray-700">
+              <Calendar className="h-4 w-4 text-cyan-500" />
               <input
                 type="date"
                 value={dateRange.start}
                 onChange={(e) => setDateRange(prev => ({ ...prev, start: e.target.value }))}
-                className="px-3 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                className="bg-transparent border-none text-gray-300 text-sm focus:outline-none focus:ring-0 [&::-webkit-calendar-picker-indicator]:filter-invert"
               />
-              <span className="text-gray-400">to</span>
+              <span className="text-gray-500 text-xs">to</span>
               <input
                 type="date"
                 value={dateRange.end}
                 onChange={(e) => setDateRange(prev => ({ ...prev, end: e.target.value }))}
-                className="px-3 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                className="bg-transparent border-none text-gray-300 text-sm focus:outline-none focus:ring-0"
               />
             </div>
 
             <select
               value={severityFilter}
               onChange={(e) => setSeverityFilter(e.target.value)}
-              className="px-3 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              className="px-3 py-1.5 bg-gray-900/50 border border-gray-700 rounded-lg text-gray-300 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
             >
               <option value="all">All Severities</option>
               <option value="Info">Info</option>
@@ -190,7 +191,7 @@ export const Logs: React.FC = () => {
             <select
               value={actionFilter}
               onChange={(e) => setActionFilter(e.target.value)}
-              className="px-3 py-1 bg-gray-700 border border-gray-600 rounded text-white text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              className="px-3 py-1.5 bg-gray-900/50 border border-gray-700 rounded-lg text-gray-300 text-sm focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
             >
               <option value="all">All Actions</option>
               {uniqueActions.map(action => (
@@ -200,7 +201,7 @@ export const Logs: React.FC = () => {
           </div>
         </div>
 
-        <div className="mb-4 text-sm text-gray-400">
+        <div className="mb-4 text-[13px] font-medium text-cyan-400">
           Showing {filteredLogs.length} of {logs.length} log entries
         </div>
 
@@ -208,40 +209,44 @@ export const Logs: React.FC = () => {
           data={filteredLogs}
           columns={columns}
           searchable
-          pageSize={15}
+          pageSize={10}
         />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-gray-800 rounded-lg border border-gray-700 p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Log Summary</h3>
-          <div className="space-y-3">
-            <div className="flex justify-between">
-              <span className="text-gray-400">Total Entries</span>
-              <span className="text-white font-semibold">{logs.length}</span>
+        {/* Summary Card */}
+        <div className="bg-gray-900/60 backdrop-blur-xl rounded-2xl border border-gray-700/50 p-6 shadow-2xl relative overflow-hidden group">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-900/20 rounded-full blur-2xl group-hover:bg-emerald-900/30 transition-colors"></div>
+          <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-6 relative z-10">Log Summary</h3>
+          <div className="space-y-5 relative z-10">
+            <div className="flex items-end justify-between border-b border-gray-700/50 pb-3">
+              <span className="text-gray-400 font-medium text-sm">Total Entries</span>
+              <span className="text-white font-bold text-2xl">{logs.length}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Success Rate</span>
-              <span className="text-green-400 font-semibold">
+            <div className="flex items-end justify-between border-b border-gray-700/50 pb-3">
+              <span className="text-gray-400 font-medium text-sm">Success Rate</span>
+              <span className="text-emerald-400 font-bold text-2xl drop-shadow-[0_0_8px_rgba(16,185,129,0.5)]">
                 {logs.length > 0 ? Math.round((logs.filter(l => l.result === 'Success').length / logs.length) * 100) : 0}%
               </span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-gray-400">Errors</span>
-              <span className="text-red-400 font-semibold">
+            <div className="flex items-end justify-between">
+              <span className="text-gray-400 font-medium text-sm">Errors</span>
+              <span className="text-red-500 font-bold text-2xl">
                 {logs.filter(l => l.severity === 'Error').length}
               </span>
             </div>
           </div>
         </div>
 
-        <div className="bg-gray-800 rounded-lg border border-gray-700 p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Most Common Actions</h3>
-          <div className="space-y-3">
+        {/* Most Common Actions Category Card */}
+        <div className="bg-gray-900/60 backdrop-blur-xl rounded-2xl border border-gray-700/50 p-6 shadow-2xl relative overflow-hidden group">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-blue-900/20 rounded-full blur-2xl group-hover:bg-blue-900/30 transition-colors"></div>
+          <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-6 relative z-10">Most Common Actions</h3>
+          <div className="space-y-4 relative z-10">
             {uniqueActions.slice(0, 5).map(action => (
-              <div key={action} className="flex justify-between">
-                <span className="text-gray-400 text-sm">{action}</span>
-                <span className="text-white font-semibold">
+              <div key={action} className="flex justify-between items-center group/item hover:bg-gray-800/50 p-2 -mx-2 rounded-lg transition-colors">
+                <span className="text-cyan-400 text-[13px] font-medium">{action}</span>
+                <span className="text-white font-bold bg-gray-800 px-3 py-1 rounded-full text-xs border border-gray-700 group-hover/item:border-cyan-500/50 transition-colors">
                   {logs.filter(l => l.action === action).length}
                 </span>
               </div>
@@ -249,15 +254,23 @@ export const Logs: React.FC = () => {
           </div>
         </div>
 
-        <div className="bg-gray-800 rounded-lg border border-gray-700 p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Recent Activity</h3>
-          <div className="space-y-3">
-            {logs.slice(0, 5).map(log => (
-              <div key={log.id} className="border-l-2 border-cyan-400 pl-3">
-                <p className="text-sm text-white">{log.action}</p>
-                <p className="text-xs text-gray-400">
-                  {format(new Date(log.timestamp), 'MMM dd, HH:mm')}
-                </p>
+        {/* Recent Activity Mini-feed Card */}
+        <div className="bg-gray-900/60 backdrop-blur-xl rounded-2xl border border-gray-700/50 p-6 shadow-2xl relative overflow-hidden group">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-purple-900/20 rounded-full blur-2xl group-hover:bg-purple-900/30 transition-colors"></div>
+          <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-6 relative z-10">Recent Activity</h3>
+          <div className="space-y-4 relative z-10">
+            {logs.slice(0, 5).map((log, index) => (
+              <div key={log.id} className="flex gap-4">
+                <div className="flex flex-col items-center">
+                  <div className={`w-2.5 h-2.5 rounded-full ${log.severity === 'Error' ? 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]' : 'bg-cyan-500 shadow-[0_0_8px_rgba(6,182,212,0.6)]'}`}></div>
+                  {index !== 4 && <div className="flex-1 w-px bg-gray-700/50 my-1"></div>}
+                </div>
+                <div className="-mt-1.5 pb-2">
+                  <p className="text-[13px] text-white font-medium">{log.action}</p>
+                  <p className="text-[11px] font-mono text-gray-500 mt-0.5">
+                    {format(new Date(log.timestamp), 'MMM dd, HH:mm')}
+                  </p>
+                </div>
               </div>
             ))}
           </div>

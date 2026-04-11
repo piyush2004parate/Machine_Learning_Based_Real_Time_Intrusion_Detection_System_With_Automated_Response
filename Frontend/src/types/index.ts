@@ -14,7 +14,7 @@ export interface ThreatIncident {
   timestamp: Date;
   source_ip: string;
   destination_ip: string;
-  threat_type: 'Malware' | 'Phishing' | 'Anomaly' | 'Encrypted Threats' | 'DDoS' | 'Port Scan';
+  threat_type: 'DoS' | 'DDoS' | 'Web Attack' | 'Brute-force' | 'Infiltration' | 'Botnet' | 'Benign' | string;
   severity: 'Low' | 'Medium' | 'High' | 'Critical';
   status: 'Active' | 'Blocked' | 'Investigating' | 'Resolved' | 'False Positive';
   description: string;

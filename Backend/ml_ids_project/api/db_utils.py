@@ -2,6 +2,9 @@ from asgiref.sync import sync_to_async
 from django.utils import timezone
 from .models import NetworkTraffic, ThreatIncident, ResponseRule, LogEntry
 from .actions import execute_action
+import time
+
+_RECENT_INCIDENTS_CACHE = {}
 
 
 async def save_traffic_and_incidents(packet_data: dict):
@@ -33,6 +36,17 @@ async def save_traffic_and_incidents(packet_data: dict):
 	attack_type_from_model = packet_data.get("attack_type")  # Get detected attack type from model
 	create_incident = (str(label) == "1") or (status in ("Anomalous", "Blocked"))
 	if create_incident:
+		ip = packet_data.get("source_ip", "")
+		now_ts = time.time()
+		
+		# Incident Deduplication: Prevent UI spam by debouncing incidents from the same IP (15 second cooldown)
+		# This absorbs the ~3 second packet buffer bleed that occurs while the Windows Firewall is physically executing the block
+		last_incident_time = _RECENT_INCIDENTS_CACHE.get(ip, 0)
+		if now_ts - last_incident_time < 15.0:
+			return None  # Skip creating a duplicate incident row
+			
+		_RECENT_INCIDENTS_CACHE[ip] = now_ts
+		
 		# Use attack type from ML model if available, otherwise infer from traffic patterns
 		if attack_type_from_model:
 			threat_type = attack_type_from_model
@@ -51,25 +65,24 @@ async def save_traffic_and_incidents(packet_data: dict):
 			severity_val = "High"
 		if rate > 500:
 			severity_val = "Critical"
-		# Confidence scoring based on live metrics
-		confidence_val = 50
-		if str(label) == "1" or status in ("Anomalous", "Blocked"):
-			confidence_val = 65
-		if rate > 50:
-			confidence_val += 10
-		if rate > 200:
-			confidence_val += 10
-		if rate > 500:
-			confidence_val += 10
-		if is_sm_ips_ports == 1:
-			confidence_val += 15
-		if proto == "TCP" and state in ("SYN", "SA"):
-			confidence_val += 10
-		if service in ("dns", "http", "https") and rate > 80:
-			confidence_val += 5
+		# Confidence scoring based directly on ML model output
+		confidence_val = float(packet_data.get("pred_prob", 0.0)) * 100
+		if confidence_val == 0.0:
+			# Fallback if no pred_prob available
+			confidence_val = 65 if str(label) == "1" or status in ("Anomalous", "Blocked") else 50
+			if rate > 50: confidence_val += 10
+			if rate > 500: confidence_val += 10
 		confidence_val = max(50, min(99, confidence_val))
+		
 		description = f"Detected {status.lower()} traffic from {packet_data.get('source_ip')} to {packet_data.get('destination_ip')} via {packet_data.get('protocol')}"
+		
+		# Auto mitigation status trigger
 		incident_status = "Blocked" if status == "Blocked" else "Active"
+		
+		# High confidence override
+		if str(label) == "1" and confidence_val > 85:
+			incident_status = "Blocked"
+			
 		created = await sync_to_async(ThreatIncident.objects.create)(
 			source_ip=packet_data.get("source_ip", ""),
 			destination_ip=packet_data.get("destination_ip", ""),
@@ -91,6 +104,20 @@ async def save_traffic_and_incidents(packet_data: dict):
 			"status": created.status,
 			"confidence": created.confidence,
 		}
+
+		# Direct ML Trigger Logic
+		if str(label) == "1" and confidence_val > 85:
+			try:
+				await sync_to_async(execute_action)("block ip", created)
+				await sync_to_async(LogEntry.objects.create)(
+					action="block ip",
+					target=str(getattr(created, 'id', '')),
+					result="Success",
+					details=f"Auto-mitigation triggered: ML Confidence {confidence_val}% over threshold (85%)",
+					severity="Critical",
+				)
+			except Exception:
+				pass
 
 		# Evaluate active response rules (comma-separated key=value, all clauses must match)
 		try:

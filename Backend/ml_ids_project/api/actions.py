@@ -13,11 +13,13 @@ notification services) when deploying in production.
 from pathlib import Path
 from datetime import datetime
 import json
+import subprocess
 
 HERE = Path(__file__).resolve().parent
 LOGS_DIR = HERE.parent.parent / 'logs'
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
+_BLOCKED_IPS_CACHE = set()
 
 def _append_log(filename: str, payload: str) -> None:
     path = LOGS_DIR / filename
@@ -27,13 +29,52 @@ def _append_log(filename: str, payload: str) -> None:
 
 
 def block_ip(incident) -> dict:
-    ip = getattr(incident, 'source_ip', None) or incident.get('source_ip') if isinstance(incident, dict) else None
+    ip = getattr(incident, 'source_ip', None) or (incident.get('source_ip') if isinstance(incident, dict) else None)
     if not ip:
         return {'result': 'failed', 'reason': 'no source_ip'}
-    _append_log('blocked_ips.txt', f'Blocked IP: {ip}')
-    _append_log('actions.log', f"Block IP executed for {ip}")
-    return {'result': 'ok', 'ip': ip}
+        
+    if ip in _BLOCKED_IPS_CACHE:
+        return {'result': 'ok', 'ip': ip, 'status': 'already_blocked'}
+        
+    try:
+        # Run a command to block the IP in Windows Firewall
+        # Action requires the Python process to run as Administrator
+        command = f'netsh advfirewall firewall add rule name="IDS_Block_{ip}" dir=in interface=any action=block remoteip={ip}'
+        subprocess.run(command, shell=True, capture_output=True, check=True)
+        
+        _BLOCKED_IPS_CACHE.add(ip)
+        _append_log('blocked_ips.txt', f'Actually Blocked IP via Windows Firewall: {ip}')
+        _append_log('actions.log', f"Block IP executed securely in Windows Firewall for {ip}")
+        return {'result': 'ok', 'ip': ip, 'status': 'blocked_in_firewall'}
+    except subprocess.CalledProcessError as e:
+        err_msg = e.stderr.decode() if e.stderr else str(e)
+        _append_log('actions.log', f"Failed to block IP {ip} in Windows Firewall. Did you run as Admin? Error: {err_msg}")
+        return {'result': 'failed', 'reason': 'firewall_command_failed', 'details': err_msg}
+    except Exception as e:
+        _append_log('actions.log', f"Failed to execute firewall command for {ip}: {e}")
+        return {'result': 'failed', 'reason': str(e)}
 
+def unblock_ip(ip: str) -> dict:
+    if not ip:
+        return {'result': 'failed', 'reason': 'no source_ip'}
+        
+    try:
+        # Run a command to unblock the IP in Windows Firewall
+        command = f'netsh advfirewall firewall delete rule name="IDS_Block_{ip}"'
+        subprocess.run(command, shell=True, capture_output=True, check=True)
+        
+        if ip in _BLOCKED_IPS_CACHE:
+            _BLOCKED_IPS_CACHE.remove(ip)
+            
+        _append_log('actions.log', f"Unblock IP executed securely in Windows Firewall for {ip}")
+        return {'result': 'ok', 'ip': ip, 'status': 'unblocked_in_firewall'}
+    except subprocess.CalledProcessError as e:
+        err_msg = e.stderr.decode() if e.stderr else str(e)
+        _append_log('actions.log', f"Failed to unblock IP {ip} in Windows Firewall: {err_msg}")
+        return {'result': 'failed', 'reason': 'firewall_command_failed', 'details': err_msg}
+    except Exception as e:
+        _append_log('actions.log', f"Failed to execute unblock firewall command for {ip}: {e}")
+        return {'result': 'failed', 'reason': str(e)}
 
 def alert_admin(incident) -> dict:
     # Placeholder for sending email/Slack/webhook. For now, log to actions.log

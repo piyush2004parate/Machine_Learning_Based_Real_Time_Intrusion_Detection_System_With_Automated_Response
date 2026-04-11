@@ -12,6 +12,7 @@ from .serializers import (
     ResponseRuleSerializer,
     LogEntrySerializer,
 )
+from .actions import unblock_ip
 from .utils.knn_classifier import KNNAnomalyDetector
 
 class NetworkTrafficViewSet(viewsets.ModelViewSet):
@@ -44,10 +45,9 @@ class NetworkTrafficViewSet(viewsets.ModelViewSet):
         """Detect if a packet/traffic is anomalous using KNN model."""
         try:
             # Initialize KNN detector with saved model
-            model_dir = os.path.join(settings.BASE_DIR, '..', '..', 'model', 'unsw_tabular')
-            model_path = os.path.join(model_dir, 'model_knn.pkl')
-            features_path = os.path.join(model_dir, 'features_knn.json')
-            scaler_path = os.path.join(model_dir, 'scaler_knn.pkl')
+            model_dir = os.path.join(settings.BASE_DIR, '..', '..')
+            model_path = os.path.join(model_dir, 'knn_model_cic2018.pkl')
+            scaler_path = os.path.join(model_dir, 'scaler_cic2018.pkl')
             
             # Check if model exists
             if not os.path.exists(model_path):
@@ -56,7 +56,7 @@ class NetworkTrafficViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_404_NOT_FOUND
                 )
             
-            detector = KNNAnomalyDetector(model_path, features_path, scaler_path)
+            detector = KNNAnomalyDetector(model_path, scaler_path=scaler_path)
             
             # Get features from request
             features = request.data.get('features', {})
@@ -84,6 +84,21 @@ class NetworkTrafficViewSet(viewsets.ModelViewSet):
 class ThreatIncidentViewSet(viewsets.ModelViewSet):
     queryset = ThreatIncident.objects.all()
     serializer_class = ThreatIncidentSerializer
+
+    @action(detail=True, methods=["post"], url_path="unblock")
+    def unblock(self, request, pk=None):
+        incident = self.get_object()
+        ip = incident.source_ip
+        if not ip:
+            return Response({"error": "No source IP found for this incident"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        result = unblock_ip(ip)
+        if result.get("result") == "ok":
+            incident.status = "Resolved"
+            incident.save()
+            return Response({"status": "success", "message": f"IP {ip} unblocked", "details": result})
+        else:
+            return Response({"status": "error", "message": f"Failed to unblock {ip}", "details": result}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class ResponseRuleViewSet(viewsets.ModelViewSet):
     queryset = ResponseRule.objects.all()

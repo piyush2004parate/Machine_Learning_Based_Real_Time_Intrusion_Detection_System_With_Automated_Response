@@ -1,13 +1,11 @@
 {% extends "admin/change_list.html" %}
 
-{% block object-tools %}
+{% block object-tools-items %}
   {{ block.super }}
-  <ul class="object-tools">
-    <li>
-      <a href="{% url 'admin:api_threatincident_clear' %}" class="deletelink"
-         onclick="return confirm('Delete all threat incidents? This cannot be undone.');">
-        Clear all incidents
-      </a>
-    </li>
-  </ul>
+  <li>
+    <a href="{% url 'admin:api_threatincident_clear' %}" class="deletelink"
+       onclick="return confirm('Delete all threat incidents? This cannot be undone.');">
+      Clear all incidents
+    </a>
+  </li>
 {% endblock %}

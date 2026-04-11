@@ -10,6 +10,8 @@ from .db_utils import save_traffic_and_incidents  # pyright: ignore[reportMissin
 from scapy.all import sniff
 from scapy.layers.inet import IP, TCP, UDP
 from collections import defaultdict, deque
+import time
+from asgiref.sync import sync_to_async
 
 def _port_to_service(port: int | None) -> str | None:
     if port is None:
@@ -83,61 +85,64 @@ import os
 from django.conf import settings
 
 # Initialize KNN detector with saved model
-model_dir = os.path.join(settings.BASE_DIR, '..', '..', 'model', 'unsw_tabular')
-model_path = os.path.join(model_dir, 'model_knn.pkl')
-features_path = os.path.join(model_dir, 'features_knn.json')
-scaler_path = os.path.join(model_dir, 'scaler_knn.pkl')
+model_dir = os.path.join(settings.BASE_DIR, '..', '..')
+model_path = os.path.join(model_dir, 'knn_model_cic2018.pkl')
+scaler_path = os.path.join(model_dir, 'scaler_cic2018.pkl')
 
 try:
-    anomaly_detector = KNNAnomalyDetector(model_path, features_path, scaler_path)
-except Exception:
-    # If model not found, create detector without loading model
+    anomaly_detector = KNNAnomalyDetector(model_path, scaler_path=scaler_path)
+except Exception as e:
+    print("Error loading anomaly detector:", e)
     # (will be used for packet collection, not classification)
     anomaly_detector = None
 
-# Per-flow state for basic metrics using canonical 5-tuple key
+# Per-flow state for CIC-IDS2018 Top 20 features
 # key = (ipA, portA, ipB, portB, protocol) where (A,portA) < (B,portB) lexicographically
 flow_stats = defaultdict(lambda: {
     "start_ts": None,
-    # forward (A->B)
-    "spkts": 0,
-    "sbytes": 0,
     "last_s_ts": None,
-    "last_s_dt": None,
-    "sjit": 0.0,
-    "smean_sum": 0,
-    "sttl": None,
-    "swin": None,
-    "stcpb": None,
-    # reverse (B->A)
-    "dpkts": 0,
-    "dbytes": 0,
-    "last_d_ts": None,
-    "last_d_dt": None,
-    "djit": 0.0,
-    "dmean_sum": 0,
-    "dttl": None,
-    "dwin": None,
-    "dtcpb": None,
-    # TCP timing
-    "t_syn": None,
-    "t_synack": None,
-    "t_ack": None,
-    "synack": None,
-    "tcprtt": None,
-    "ackdat": None,
+    
+    "Total Fwd Packets": 0,
+    "Fwd Packets Length Total": 0,
+    "Fwd Packet Length Max": 0,
+    "Fwd Seg Size Min": 999999,
+    "Fwd Header Length": 0,
+    "Init Fwd Win Bytes": -1,
+    "Fwd IAT Total": 0.0,
+    "Fwd IAT Min": 999999.0,
+    
+    "Subflow Bwd Packets": 0,
+    "Bwd Packets Length Total": 0,
+    "Bwd Header Length": 0,
+    "Init Bwd Win Bytes": -1,
+    
+    "RST Flag Count": 0,
+    "ECE Flag Count": 0,
+    
+    # UI mapping fields backward compatibility
+    "sbytes": 0, "dbytes": 0,
+    "spkts": 0, "dpkts": 0,
+    "last_emit_ts": 0,
 })
 
-# Rolling window of recent "connections/events" to approximate ct_* counters
-recent_events = deque(maxlen=100)
+# Rolling window of recent "connections/events" (deprecated, kept small for dummy UI vars)
+recent_events = deque(maxlen=10)
 # Live buffer of enriched items for REST exposure
 live_buffer = deque(maxlen=1000)
+
+# Global tracker for detecting brute-force or DoS floods across multiple fresh sockets.
+# Flow-based ML evaluates each socket independently; tools like `donisator` bypass it.
+global_ip_connection_tracker = defaultdict(lambda: {"count": 0, "start_ts": 0.0})
 
 class TrafficConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         await self.accept()
+        self.keep_sniffing = True
+        self.shared_blocked_ips = set()
         # Queue for throttled outbound messages (produced by sniffing thread)
         self.out_queue: asyncio.Queue = asyncio.Queue()
+        # Decoupled Background Task: Silently sync the Database Blocklist to RAM every 2 seconds
+        self.db_task = asyncio.create_task(self.db_sync_loop())
         # Background task to drain the queue and send at 1 msg/sec
         self.sender_task = asyncio.create_task(self.send_from_queue())
         # Store the main event loop to use for scheduling from the sniffing thread
@@ -147,11 +152,28 @@ class TrafficConsumer(AsyncWebsocketConsumer):
         print("WebSocket connection accepted. Starting live packet capture (Scapy)...")
 
     async def disconnect(self, close_code):
+        self.keep_sniffing = False
         if getattr(self, "task", None):
             self.task.cancel()
         if getattr(self, "sender_task", None):
             self.sender_task.cancel()
-        print(f"WebSocket disconnected with code: {close_code}")
+        if getattr(self, "db_task", None):
+            self.db_task.cancel()
+        print(f"WebSocket disconnected with code: {close_code}. Scapy thread stopping...")
+
+    async def db_sync_loop(self) -> None:
+        """Silently run parallel to everything else, maintaining an accurate Live Blocklist in RAM"""
+        try:
+            while self.keep_sniffing:
+                try:
+                    from .models import ThreatIncident
+                    blocked_qs = await sync_to_async(list)(ThreatIncident.objects.filter(status='Blocked').values_list('source_ip', flat=True))
+                    self.shared_blocked_ips = set(blocked_qs)
+                except Exception as e:
+                    pass
+                await asyncio.sleep(2.0)
+        except asyncio.CancelledError:
+            return
 
     async def send_from_queue(self) -> None:
         """Continuously send one packet per second from the outbound queue.
@@ -160,6 +182,13 @@ class TrafficConsumer(AsyncWebsocketConsumer):
         try:
             while True:
                 data = await self.out_queue.get()
+                
+                # Late-Stage Purge: If overlapping packets were buffered into the queue BEFORE the firewall
+                # physical block was completed, drop them instantly here. This prevents the UI from slowly
+                # dripping 40 queued packets for 40 seconds straight, creating an illusion of an ongoing attack.
+                if data.get("source_ip") in getattr(self, "shared_blocked_ips", set()):
+                    continue
+                    
                 # Send traffic to client (flat dict with top-level timestamp)
                 await self.send(text_data=json.dumps(data))
                 # Persist to DB and emit incident live if created
@@ -172,8 +201,9 @@ class TrafficConsumer(AsyncWebsocketConsumer):
                         await self.send(text_data=json.dumps(incident))
                 except Exception as e:
                     print(f"Error saving traffic/incidents: {e}")
-                # Throttle to 1 message per second
-                await asyncio.sleep(1)
+                # Throttle to 1 message per second to avoid crashing the browser frontend
+                await asyncio.sleep(1.0)
+                
         except asyncio.CancelledError:
             # Task is being cancelled on disconnect; exit gracefully
             return
@@ -190,6 +220,10 @@ class TrafficConsumer(AsyncWebsocketConsumer):
                 if IP not in pkt:
                     return
                 ip_layer = pkt[IP]
+                
+                # Math Drop: Silently discard packets from identically shared `self.shared_blocked_ips`
+                if ip_layer.src in getattr(self, "shared_blocked_ips", set()):
+                    return
 
                 if TCP in pkt:
                     protocol_str = "TCP"
@@ -245,180 +279,188 @@ class TrafficConsumer(AsyncWebsocketConsumer):
                 if st["start_ts"] is None:
                     st["start_ts"] = now_ts
 
-                # TTL per direction
+                # Tracker logic moved down correctly
+
+                # TTL per direction (kept for backward UI comp)
                 ttl_val = int(getattr(ip_layer, "ttl", 0))
+
+                # Header lengths & Window
+                try:
+                    header_len = int(ip_layer.ihl) * 4
+                except Exception:
+                    header_len = 20
+                
+                win = -1
+                if protocol_str == "TCP":
+                    tcp = pkt[TCP]
+                    flags = int(tcp.flags)
+                    if flags & 0x04: st["RST Flag Count"] += 1
+                    if flags & 0x40: st["ECE Flag Count"] += 1
+                    header_len += int(tcp.dataofs) * 4
+                    win = int(tcp.window)
+                elif protocol_str == "UDP":
+                    header_len += 8
+
+                seg_size = header_len
 
                 # Update counters by direction
                 if fwd:
                     st["spkts"] += 1
                     st["sbytes"] += length_val
-                    st["smean_sum"] += length_val
+                    st["Total Fwd Packets"] += 1
+                    st["Fwd Packets Length Total"] += length_val
+                    if length_val > st["Fwd Packet Length Max"]:
+                        st["Fwd Packet Length Max"] = length_val
+                    if seg_size < st["Fwd Seg Size Min"]:
+                        st["Fwd Seg Size Min"] = seg_size
+                    st["Fwd Header Length"] += header_len
+                    if st["Init Fwd Win Bytes"] == -1:
+                        st["Init Fwd Win Bytes"] = win
+                    
                     if st["last_s_ts"] is not None:
-                        dt = max(0.0, now_ts - st["last_s_ts"])
-                        if st["last_s_dt"] is not None:
-                            st["sjit"] += abs(dt - st["last_s_dt"])
-                        st["last_s_dt"] = dt
-                        sinpkt = dt
-                    else:
-                        sinpkt = None
+                        dt = now_ts - st["last_s_ts"]
+                        st["Fwd IAT Total"] += dt
+                        if dt < st["Fwd IAT Min"]:
+                            st["Fwd IAT Min"] = dt
                     st["last_s_ts"] = now_ts
-                    st["sttl"] = ttl_val
                 else:
                     st["dpkts"] += 1
                     st["dbytes"] += length_val
-                    st["dmean_sum"] += length_val
-                    if st["last_d_ts"] is not None:
-                        dt = max(0.0, now_ts - st["last_d_ts"])
-                        if st["last_d_dt"] is not None:
-                            st["djit"] += abs(dt - st["last_d_dt"])
-                        st["last_d_dt"] = dt
-                        dinpkt = dt
-                    else:
-                        dinpkt = None
-                    st["last_d_ts"] = now_ts
-                    st["dttl"] = ttl_val
-
-                # TCP-specific fields and timing
-                swin = dwin = stcpb = dtcpb = None
-                synack = tcprtt = ackdat = None
-                if protocol_str == "TCP":
-                    tcp = pkt[TCP]
-                    flags = int(tcp.flags)
-                    win = int(getattr(tcp, "window", 0))
-                    seq = int(getattr(tcp, "seq", 0))
-                    ack = int(getattr(tcp, "ack", 0))
-                    # Save window and base seq per direction (first seen)
-                    if fwd:
-                        if st["swin"] is None:
-                            st["swin"] = win
-                        if st["stcpb"] is None:
-                            st["stcpb"] = seq
-                        swin = st["swin"]
-                        stcpb = st["stcpb"]
-                    else:
-                        if st["dwin"] is None:
-                            st["dwin"] = win
-                        if st["dtcpb"] is None:
-                            st["dtcpb"] = seq
-                        dwin = st["dwin"]
-                        dtcpb = st["dtcpb"]
-
-                    # TCP handshake timing (assumes A initiates)
-                    syn = bool(flags & 0x02)
-                    ack_flag = bool(flags & 0x10)
-                    # SYN from A->B
-                    if fwd and syn and not ack_flag:
-                        st["t_syn"] = now_ts
-                    # SYN-ACK from B->A
-                    if (not fwd) and syn and ack_flag:
-                        st["t_synack"] = now_ts
-                        if st["t_syn"] is not None:
-                            st["synack"] = max(0.0, now_ts - st["t_syn"])
-                    # Final ACK from A->B
-                    if fwd and (not syn) and ack_flag:
-                        st["t_ack"] = now_ts
-                        if st["t_syn"] is not None:
-                            st["tcprtt"] = max(0.0, now_ts - st["t_syn"])
-                    synack = st.get("synack")
-                    tcprtt = st.get("tcprtt")
+                    st["Subflow Bwd Packets"] += 1
+                    st["Bwd Packets Length Total"] += length_val
+                    st["Bwd Header Length"] += header_len
+                    if st["Init Bwd Win Bytes"] == -1:
+                        st["Init Bwd Win Bytes"] = win
 
                 # Derived metrics
                 dur = max(0.0, now_ts - (st["start_ts"] or now_ts))
                 total_pkts = st["spkts"] + st["dpkts"]
                 rate = (total_pkts / dur) if dur > 0 else 0.0
-                smean = (st["smean_sum"] / st["spkts"]) if st["spkts"] > 0 else 0.0
-                dmean = (st["dmean_sum"] / st["dpkts"]) if st["dpkts"] > 0 else 0.0
-                sload = (st["sbytes"] * 8) / dur if dur > 0 else 0.0
-                dload = (st["dbytes"] * 8) / dur if dur > 0 else 0.0
 
                 # Service and state
                 service = _port_to_service(sport) or _port_to_service(dport)
                 is_sm_ips_ports = int((ip_layer.src == ip_layer.dst) and ((sport or 0) == (dport or 0)))
                 state = None
                 if protocol_str == "TCP":
-                    # Very coarse state mapping
                     tcp = pkt[TCP]
                     flags = int(tcp.flags)
-                    if flags & 0x04:
-                        state = "RST"
-                    elif (flags & 0x01):
-                        state = "FIN"
-                    elif (flags & 0x12) == 0x12:  # SYN+ACK
-                        state = "SA"
-                    elif (flags & 0x02):
-                        state = "SYN"
-                    elif (flags & 0x10):
-                        state = "ACK"
+                    if flags & 0x04: state = "RST"
+                    elif (flags & 0x01): state = "FIN"
+                    elif (flags & 0x12) == 0x12: state = "SA"
+                    elif (flags & 0x02): state = "SYN"
+                    elif (flags & 0x10): state = "ACK"
                 elif protocol_str == "UDP":
                     state = "CON"
 
-                # Update rolling events window
-                recent_events.append({
-                    "src": ip_layer.src,
-                    "dst": ip_layer.dst,
-                    "sport": sport,
-                    "dport": dport,
-                    "service": service,
-                    "state": state,
-                    "ttl": ttl_val,
-                })
+                # Track global NEW connection rate per IP
+                # Normal web traffic opens 1-4 connections and sends hundreds of ACKs.
+                # DoS tools (like donisator) open dozens of isolated connections (SYNs).
+                ip_tracker = global_ip_connection_tracker[ip_layer.src]
+                is_dos_flood = now_ts < ip_tracker.get("banned_until", 0.0)
 
-                # Compute ct_* counters over recent window
-                def _count(pred):
-                    c = 0
-                    # iterate over a snapshot of the deque to avoid "deque mutated during iteration"
-                    # which can occur when the sniffing thread appends while another thread is iterating
-                    for ev in list(recent_events):
-                        try:
-                            if pred(ev):
-                                c += 1
-                        except Exception:
-                            continue
-                    return c
+                if now_ts - ip_tracker["start_ts"] > 1.0:
+                    ip_tracker["count"] = 0
+                    ip_tracker["udp_count"] = 0
+                    ip_tracker["tcp_lengths"] = []
+                    ip_tracker["start_ts"] = now_ts
+                
+                # TCP SYN Flood tracking (low threshold because SYNs should be rare)
+                if state == "SYN":
+                    ip_tracker["count"] += 1
+                    if ip_tracker["count"] > 10:
+                        ip_tracker["banned_until"] = now_ts + 5.0
+                        is_dos_flood = True
+                        
+                # Robotic Payload Flood Tracking (Catches donisator.py generic TCP payloads)
+                # Normal network browsing utilizes highly varied packet lengths (e.g. 54b ACKs + 1500b Data).
+                # DoS spam scripts emit identical payload lengths repetitively.
+                if protocol_str == "TCP":
+                    lengths = ip_tracker.get("tcp_lengths", [])
+                    lengths.append(length_val)
+                    ip_tracker["tcp_lengths"] = lengths
+                    # If we receive 5 identical generic TCP payload packets between 70b and 500b in 1 sec
+                    # We bound it <500b so we don't accidentally ban legitimate bulk MTU downloads (like 1410b or 1460b video chunks)
+                    if len(lengths) >= 5 and len(set(lengths)) == 1 and 70 < lengths[0] < 500:
+                        ip_tracker["banned_until"] = now_ts + 5.0
+                        is_dos_flood = True
+                        
+                # UDP Flood tracking (QUIC video streaming often hits 1000+ packets/sec)
+                if protocol_str == "UDP":
+                    ip_tracker["udp_count"] = ip_tracker.get("udp_count", 0) + 1
+                    if ip_tracker["udp_count"] > 500:
+                        ip_tracker["banned_until"] = now_ts + 5.0
+                        is_dos_flood = True
 
-                ct_srv_src = _count(lambda ev: ev.get("src") == ip_layer.src and ev.get("service") == service)
-                ct_state_ttl = _count(lambda ev: ev.get("state") == state and int(ev.get("ttl") or 0) == ttl_val)
-                ct_dst_ltm = _count(lambda ev: ev.get("dst") == ip_layer.dst)
-                ct_src_dport_ltm = _count(lambda ev: (ev.get("src") == ip_layer.src) and (ev.get("dport") == dport))
-                ct_dst_sport_ltm = _count(lambda ev: (ev.get("dst") == ip_layer.dst) and (ev.get("sport") == sport))
-                ct_dst_src_ltm = _count(lambda ev: (ev.get("dst") == ip_layer.dst) and (ev.get("src") == ip_layer.src))
-                ct_src_ltm = _count(lambda ev: ev.get("src") == ip_layer.src)
-                # Approximate ct_srv_dst as same source to same destination and same service
-                ct_srv_dst = _count(lambda ev: (ev.get("src") == ip_layer.src) and (ev.get("dst") == ip_layer.dst) and (ev.get("service") == service))
 
-                # --- RATE LIMITING LOGIC ---
+                # Rate limiting logic
                 last_emit = st.get("last_emit_ts", 0)
                 if total_pkts > 1 and (now_ts - last_emit < 1.0) and (total_pkts % 100 != 0):
-                    return  # Skip prediction and UI emit for this packet (throttle)
+                    return
 
                 st["last_emit_ts"] = now_ts
-                # ---------------------------
-
+                
+                # CIC-IDS2018 Features computation
+                fwd_pkts = st["Total Fwd Packets"]
+                bwd_pkts = st["Subflow Bwd Packets"]
+                fwd_bytes = st["Fwd Packets Length Total"]
+                bwd_bytes = st["Bwd Packets Length Total"]
+                fwd_seg_size_min = 0 if st["Fwd Seg Size Min"] == 999999 else st["Fwd Seg Size Min"]
+                
+                bwd_pkts_s = bwd_pkts / dur if dur > 0 else 0
+                avg_fwd_segment_size = fwd_bytes / fwd_pkts if fwd_pkts > 0 else 0
+                fwd_iat_mean = st["Fwd IAT Total"] / (fwd_pkts - 1) if fwd_pkts > 1 else 0
+                fwd_iat_min = 0 if st["Fwd IAT Min"] == 999999.0 else st["Fwd IAT Min"]
+                
                 flow_features = {
-                    'dur': dur, 'spkts': st['spkts'], 'dpkts': st['dpkts'],
-                    'sbytes': st['sbytes'], 'dbytes': st['dbytes'], 'rate': rate,
-                    'sload': sload, 'dload': dload, 
-                    'sinpkt': (dur / st['spkts'] * 1000) if st['spkts'] > 0 else 0.0,
-                    'dinpkt': (dur / st['dpkts'] * 1000) if st['dpkts'] > 0 else 0.0, 
-                    'sjit': (st.get('sjit', 0) / st['spkts'] * 1000) if st['spkts'] > 0 else 0.0, 
-                    'djit': (st.get('djit', 0) / st['dpkts'] * 1000) if st['dpkts'] > 0 else 0.0,
-                    'sttl': st.get('sttl') or 0, 'dttl': st.get('dttl') or 0, 'swin': st.get('swin') or 0,
-                    'stcpb': st.get('stcpb') or 0, 'dtcpb': st.get('dtcpb') or 0, 'synack': synack or 0,
-                    'tcprtt': tcprtt or 0, 'ackdat': st.get('ackdat') or 0, 'smean': smean,
-                    'dmean': dmean, 'ct_srv_src': ct_srv_src, 'ct_state_ttl': min(6, ct_state_ttl),
-                    'ct_dst_ltm': ct_dst_ltm, 'ct_src_dport_ltm': ct_src_dport_ltm,
-                    'ct_dst_sport_ltm': ct_dst_sport_ltm, 'ct_dst_src_ltm': ct_dst_src_ltm,
-                    'ct_src_ltm': ct_src_ltm, 'ct_srv_dst': ct_srv_dst, 'is_sm_ips_ports': is_sm_ips_ports,
+                    'Fwd Seg Size Min': fwd_seg_size_min,
+                    'Fwd Header Length': st["Fwd Header Length"],
+                    'Subflow Fwd Bytes': fwd_bytes,
+                    'Bwd Header Length': st["Bwd Header Length"],
+                    'Init Fwd Win Bytes': max(-1, st["Init Fwd Win Bytes"]),
+                    'Total Fwd Packets': fwd_pkts,
+                    'Fwd Packets Length Total': fwd_bytes,
+                    'RST Flag Count': st["RST Flag Count"],
+                    'ECE Flag Count': st["ECE Flag Count"],
+                    'Fwd Packet Length Max': st["Fwd Packet Length Max"],
+                    'Subflow Bwd Packets': bwd_pkts,
+                    'Avg Fwd Segment Size': avg_fwd_segment_size,
+                    'Bwd Packets Length Total': bwd_bytes,
+                    'Bwd Packets/s': bwd_pkts_s,
+                    'Init Bwd Win Bytes': max(-1, st["Init Bwd Win Bytes"]),
+                    'Fwd IAT Total': st["Fwd IAT Total"],
+                    'Subflow Bwd Bytes': bwd_bytes,
+                    'Fwd IAT Mean': fwd_iat_mean,
+                    'Fwd Packet Length Mean': avg_fwd_segment_size,
+                    'Fwd IAT Min': fwd_iat_min,
                 }
 
                 if anomaly_detector is not None:
                     try:
-                        # Hybrid Rule: Pre-filter trusted heavy background protocols to avoid ML false positives
-                        # We whitelist standard web states (ACK/CON/FIN) on known ports unless there's a huge packet rate.
+                        # Hybrid Rule: Prevent ML False Positives on "Immature Flows"
+                        # The CIC-IDS2018 model expects mature network flows. Single isolated packets 
+                        # (like background keep-alives or ACKs) mathematically skew to False Positives.
                         is_trusted_bg = False
-                        if state in ["ACK", "CON", "FIN", "RST"]:
-                            if (dport in [53, 68, 80, 443] or sport in [53, 68, 80, 443]):
-                                is_trusted_bg = True
+                        
+                        # DISABLED for DoS Demo: Prevent ML False Positives on "Immature Flows"
+                        # if total_pkts < 4 and dur < 0.5:
+                        #     is_trusted_bg = True
+                            
+                        # DISABLED for DoS Demo: Whitelist standard web/app ports without massive traffic spikes to prevent feedback loops
+                        # Ports: 53 (DNS), 68 (DHCP), 80 (HTTP), 443 (HTTPS), 8000 (Django WS), 5173 (Vite HMR)
+                        # if state in ["ACK", "FIN", "RST"] and rate < 500:
+                        #     if (dport in [53, 68, 80, 443, 8000, 5173] or sport in [53, 68, 80, 443, 8000, 5173]):
+                        #         is_trusted_bg = True
+                                
+                        # Whitelist MDNS / Local Broadcasts (prevents MDNS being tagged as DoS)
+                        if ip_layer.dst == "224.0.0.251" or ip_layer.dst == "255.255.255.255":
+                            is_trusted_bg = True
+
+                        # Intra-LAN Noise Filter: Trust low-rate local traffic
+                        # Windows SMB/NetBios background chatter (150-byte pings) often gets tagged as DoS by ML
+                        # DISABLED: User is running a slow DoS attack (e.g., 26 pkts/sec) that gets caught by this filter.
+                        # if ip_layer.src.startswith(("192.168.", "10.", "172.")) and ip_layer.dst.startswith(("192.168.", "10.", "172.")):
+                        #     if rate < 50 and total_pkts < 100:
+                        #         is_trusted_bg = True
 
                         if is_trusted_bg:
                             result = {
@@ -430,21 +472,56 @@ class TrafficConsumer(AsyncWebsocketConsumer):
                             result = anomaly_detector.predict(flow_features)
 
                         pred_label = result.get('label', 'Normal')
-                        status = pred_label
-                        severity = "Critical" if pred_label == "Anomalous" else "Low"
-                        pred_idx = result.get('prediction', 0)
                         pred_prob = result.get('confidence', 0.0)
+                        
+                        # Override ML for high-rate connection floods
+                        # Flow-based models (like CIC-IDS2018) often predict 'Benign' for 1-packet DoS flows.
+                        # Reduced threshold to 10 to match the very slow rate (~16 pkts/sec) generated by donisator.py
+                        if is_dos_flood:
+                            pred_label = "DoS"
+                            result['label'] = "DoS"
+                            pred_prob = 0.99
+                            result['prediction'] = 1
+                        
+                        # Strong False Positive Suppression:
+                        if pred_label not in ("Normal", "Benign"):
+                            if pred_label == "Infiltration" and (pred_prob < 0.95 or (fwd_bytes + bwd_bytes) < 50000):
+                                pred_label = "Benign"
+                                result['label'] = "Benign"
+                                pred_prob = 0.99
+                                result['prediction'] = 0
+                            elif pred_label == "DoS" and pred_prob < 0.85:
+                                pred_label = "Benign"
+                                result['label'] = "Benign"
+                                pred_prob = 1.0 - pred_prob
+                                result['prediction'] = 0
+                            elif pred_label != "DoS" and pred_prob < 0.80:
+                                pred_label = "Benign"
+                                result['label'] = "Benign"
+                                pred_prob = 1.0 - pred_prob # Flip confidence back
+                                result['prediction'] = 0
+                            
+                        # Standardize visual outputs
+                        if pred_label == 'Benign':
+                            status = 'Benign'
+                        else:
+                            status = pred_label
+                            
+                        severity = "Critical" if status not in ("Normal", "Benign") else "Low"
+                        pred_idx = result.get('prediction', 0)
                         probs = [
                             result.get('probabilities', {}).get('normal', 0.0),
                             result.get('probabilities', {}).get('anomalous', 0.0)
                         ]
                         
                         # Classify attack type if anomalous
-                        if pred_label == "Anomalous":
+                        if status not in ("Normal", "Benign") and status == "Anomalous":
                             attack_type_detected = _classify_attack_type(
                                 rate, is_sm_ips_ports, protocol_str, str(state), str(service), 
                                 st["spkts"], st["dpkts"], st.get("sjit", 0), st.get("djit", 0)
                             )
+                        elif status not in ("Normal", "Benign"):
+                            attack_type_detected = status # Direct model class, e.g. "DoS"
                     except Exception as e:
                         print("KNN Prediction Error:", e)
                         status, severity, probs, pred_idx, pred_prob = "Normal", "Low", [], 0, 0.0
@@ -471,41 +548,34 @@ class TrafficConsumer(AsyncWebsocketConsumer):
                     "label": label_val,
                     "attack_type": attack_type_detected,
                     # Extended metrics (best-effort live approximation)
+                    # Inject our CIC-IDS2018 Top 20 features dynamically
                     "dur": dur,
                     "spkts": st["spkts"],
                     "dpkts": st["dpkts"],
-                    "sbytes": st["sbytes"],
-                    "dbytes": st["dbytes"],
                     "rate": rate,
-                    "sload": sload,
-                    "dload": dload,
-                    "sinpkt": st.get("last_s_dt"),
-                    "dinpkt": st.get("last_d_dt"),
-                    "sjit": st.get("sjit"),
-                    "djit": st.get("djit"),
-                    "smean": smean,
-                    "dmean": dmean,
-                    "sttl": st.get("sttl"),
-                    "dttl": st.get("dttl"),
-                    "swin": st.get("swin"),
-                    "dwin": st.get("dwin"),
-                    "stcpb": st.get("stcpb"),
-                    "dtcpb": st.get("dtcpb"),
-                    "synack": synack,
-                    "tcprtt": tcprtt,
-                    "ackdat": st.get("ackdat"),
                     "service": service,
                     "state": state,
                     "is_sm_ips_ports": is_sm_ips_ports,
-                    # Rolling counters (approximate over last 100 events)
-                    "ct_srv_src": ct_srv_src,
-                    "ct_state_ttl": ct_state_ttl,
-                    "ct_dst_ltm": ct_dst_ltm,
-                    "ct_src_dport_ltm": ct_src_dport_ltm,
-                    "ct_dst_sport_ltm": ct_dst_sport_ltm,
-                    "ct_dst_src_ltm": ct_dst_src_ltm,
-                    "ct_src_ltm": ct_src_ltm,
-                    "ct_srv_dst": ct_srv_dst,
+                    "fwd_seg_size_min": flow_features.get("Fwd Seg Size Min"),
+                    "fwd_header_len": flow_features.get("Fwd Header Length"),
+                    "subflow_fwd_bytes": flow_features.get("Subflow Fwd Bytes"),
+                    "bwd_header_len": flow_features.get("Bwd Header Length"),
+                    "init_fwd_win": flow_features.get("Init Fwd Win Bytes"),
+                    "total_fwd_packets": flow_features.get("Total Fwd Packets"),
+                    "fwd_packets_len_total": flow_features.get("Fwd Packets Length Total"),
+                    "rst_flag_cnt": flow_features.get("RST Flag Count"),
+                    "ece_flag_cnt": flow_features.get("ECE Flag Count"),
+                    "fwd_packet_len_max": flow_features.get("Fwd Packet Length Max"),
+                    "subflow_bwd_packets": flow_features.get("Subflow Bwd Packets"),
+                    "avg_fwd_seg_size": flow_features.get("Avg Fwd Segment Size"),
+                    "bwd_packets_len_total": flow_features.get("Bwd Packets Length Total"),
+                    "bwd_packets_s": flow_features.get("Bwd Packets/s"),
+                    "init_bwd_win": flow_features.get("Init Bwd Win Bytes"),
+                    "fwd_iat_total": flow_features.get("Fwd IAT Total"),
+                    "subflow_bwd_bytes": flow_features.get("Subflow Bwd Bytes"),
+                    "fwd_iat_mean": flow_features.get("Fwd IAT Mean"),
+                    "fwd_packet_len_mean": flow_features.get("Fwd Packet Length Mean"),
+                    "fwd_iat_min": flow_features.get("Fwd IAT Min"),
                 }
 
                 # Add to live buffer for REST exposure
@@ -527,7 +597,13 @@ class TrafficConsumer(AsyncWebsocketConsumer):
                     # Log and continue; we don't want a background packet to crash the sniff thread
                     print(f"Failed to schedule outbound send: {e}")
             except Exception as e:
-                print(f"Error processing a Scapy packet: {e}")
+                pass # Suppress mid-shutdown parsing errors
+                
+        def should_stop(pkt):
+            return not getattr(self, "keep_sniffing", False)
 
         # Start Scapy sniffing (requires admin privileges and Npcap on Windows)
-        sniff(filter="ip", prn=handle_packet, store=False)
+        try:
+            sniff(filter="ip", prn=handle_packet, stop_filter=should_stop, store=False)
+        except Exception as e:
+            print(f"Scapy sniffing terminated: {e}")

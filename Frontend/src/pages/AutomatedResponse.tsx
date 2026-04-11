@@ -77,15 +77,15 @@ export const AutomatedResponse: React.FC = () => {
   };
 
   const getActionBadge = (action: ResponseRule['action']) => {
-    const colors = {
-      'Block IP': 'bg-red-500',
-      'Isolate Device': 'bg-orange-500',
-      'Alert Admin': 'bg-yellow-500',
-      'Quarantine': 'bg-purple-500',
+    const styles: Record<string, string> = {
+      'Block IP': 'bg-red-500/20 text-red-500 border border-red-500/30',
+      'Isolate Device': 'bg-orange-500/20 text-orange-400 border border-orange-500/30',
+      'Alert Admin': 'bg-amber-500/20 text-amber-500 border border-amber-500/30',
+      'Quarantine': 'bg-purple-500/20 text-purple-400 border border-purple-500/30',
     };
 
     return (
-      <span className={`px-2 py-1 rounded-full text-xs font-medium text-white ${colors[action]}`}>
+      <span className={`px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider shadow-sm ${styles[action]}`}>
         {action}
       </span>
     );
@@ -117,19 +117,18 @@ export const AutomatedResponse: React.FC = () => {
       key: 'is_active' as keyof ResponseRule,
       header: 'Status',
       render: (item: ResponseRule) => (
-        <button
-          onClick={() => toggleRule(item.id)}
-          className="flex items-center space-x-2 text-sm"
-        >
-          {item.is_active ? (
-            <ToggleRight className="h-5 w-5 text-green-400" />
-          ) : (
-            <ToggleLeft className="h-5 w-5 text-gray-400" />
-          )}
-          <span className={item.is_active ? 'text-green-400' : 'text-gray-400'}>
+        <label className="relative inline-flex items-center cursor-pointer">
+          <input
+            type="checkbox"
+            className="sr-only peer"
+            checked={item.is_active}
+            onChange={() => toggleRule(item.id)}
+          />
+          <div className="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-500 hover:shadow-[0_0_10px_rgba(6,182,212,0.3)] transition-all"></div>
+          <span className={`ml-3 text-sm font-medium ${item.is_active ? 'text-cyan-400' : 'text-gray-500'}`}>
             {item.is_active ? 'Active' : 'Inactive'}
           </span>
-        </button>
+        </label>
       ),
       sortable: true,
     },
@@ -166,50 +165,51 @@ export const AutomatedResponse: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-white">Automated Response</h2>
-          <p className="text-gray-400">Configure and manage automated security responses</p>
+          <h2 className="text-[24px] font-bold text-white tracking-tight flex items-center gap-3">Automated Response</h2>
+          <p className="text-sm text-gray-400 mt-1 font-medium tracking-wide">Configure and manage automated security responses</p>
         </div>
 
-        <div className="flex items-center space-x-4">
-          <div className="flex items-center space-x-3">
-            <span className="text-gray-300">Auto-Response System</span>
-            <button
-              onClick={() => {
-                setAutoResponseEnabled(!autoResponseEnabled);
-                showToast(
-                  autoResponseEnabled ? 'warning' : 'success',
-                  `Auto-response system ${autoResponseEnabled ? 'disabled' : 'enabled'}`
-                );
-              }}
-              className="flex items-center"
-            >
-              {autoResponseEnabled ? (
-                <ToggleRight className="h-6 w-6 text-green-400" />
-              ) : (
-                <ToggleLeft className="h-6 w-6 text-gray-400" />
-              )}
-            </button>
+        <div className="flex items-center space-x-4 bg-gray-900/60 backdrop-blur-xl border border-gray-700/50 p-3 rounded-xl shadow-xl">
+          <div className="flex items-center space-x-3 px-2">
+            <span className={`font-semibold text-sm tracking-wide ${autoResponseEnabled ? 'text-emerald-400' : 'text-gray-400'}`}>
+              Master Auto-Response
+            </span>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                className="sr-only peer"
+                checked={autoResponseEnabled}
+                onChange={() => {
+                  setAutoResponseEnabled(!autoResponseEnabled);
+                  showToast(
+                    autoResponseEnabled ? 'warning' : 'success',
+                    `Auto-response system ${autoResponseEnabled ? 'disabled' : 'enabled'}`
+                  );
+                }}
+              />
+              <div className="w-14 h-7 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-emerald-500 hover:shadow-[0_0_15px_rgba(16,185,129,0.3)] transition-all drop-shadow-md"></div>
+            </label>
           </div>
         </div>
       </div>
 
       {!autoResponseEnabled && (
-        <div className="bg-yellow-900 border border-yellow-600 rounded-lg p-4">
+        <div className="bg-amber-900/20 border border-amber-500/30 rounded-xl p-4 shadow-lg backdrop-blur-md">
           <div className="flex items-center">
-            <Shield className="h-5 w-5 text-yellow-400 mr-3" />
-            <p className="text-yellow-300">
+            <Shield className="h-5 w-5 text-amber-500 mr-3" />
+            <p className="text-amber-400/90 text-sm font-medium">
               Automated response system is disabled. Security incidents will require manual intervention.
             </p>
           </div>
         </div>
       )}
 
-      <div className="bg-gray-800 rounded-lg border border-gray-700 p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-white">Response Rules</h3>
-          <button className="flex items-center space-x-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg transition-colors">
+      <div className="bg-gray-900/60 backdrop-blur-xl rounded-2xl border border-gray-700/50 p-6 shadow-2xl">
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="text-lg font-bold text-white tracking-wide">Response Rules</h3>
+          <button className="flex items-center space-x-2 px-5 py-2.5 bg-cyan-600 hover:bg-cyan-500 shadow-[0_0_15px_rgba(8,145,178,0.4)] text-white rounded-lg transition-all font-semibold text-sm hover:-translate-y-0.5">
             <Plus className="h-4 w-4" />
             <span>Add Rule</span>
           </button>
@@ -223,36 +223,37 @@ export const AutomatedResponse: React.FC = () => {
         />
       </div>
 
-      <div className="bg-gray-800 rounded-lg border border-gray-700 p-6">
-        <h3 className="text-lg font-semibold text-white mb-4">IP Whitelist</h3>
-        <p className="text-gray-400 mb-4">Trusted IPs that bypass automated responses</p>
+      <div className="bg-gray-900/60 backdrop-blur-xl rounded-2xl border border-gray-700/50 p-6 shadow-2xl relative overflow-hidden">
+        <div className="absolute -bottom-24 -right-24 w-64 h-64 bg-cyan-900/10 rounded-full blur-3xl pointer-events-none"></div>
+        <h3 className="text-lg font-bold text-white mb-2 relative z-10">IP Whitelist</h3>
+        <p className="text-sm text-gray-400 mb-6 font-medium relative z-10">Trusted IPs that bypass automated responses</p>
 
-        <div className="flex items-center space-x-3 mb-4">
+        <div className="flex items-center mb-6 max-w-md relative z-10 shadow-lg rounded-lg overflow-hidden border border-gray-700/50">
           <input
             type="text"
             placeholder="Enter IP address..."
             value={newWhitelistIp}
             onChange={(e) => setNewWhitelistIp(e.target.value)}
-            className="flex-1 px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+            className="flex-1 px-4 py-3 bg-gray-900/50 text-white placeholder-gray-500 font-mono text-sm focus:outline-none focus:bg-gray-900/80 transition-colors"
           />
           <button
             onClick={addWhitelistIp}
-            className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
+            className="px-6 py-3 bg-gray-800 hover:bg-cyan-600 text-cyan-400 hover:text-white border-l border-gray-700/50 transition-all font-semibold text-sm"
           >
             Add IP
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 relative z-10">
           {whitelistIps.map((ip, index) => (
             <div
               key={index}
-              className="flex items-center justify-between bg-gray-700 px-3 py-2 rounded-lg"
+              className="flex items-center justify-between bg-gray-800/80 border border-gray-700/50 shadow-inner px-4 py-3 rounded-lg group hover:border-cyan-500/30 transition-colors"
             >
-              <span className="font-mono text-gray-300">{ip}</span>
+              <span className="font-mono text-gray-300 text-sm group-hover:text-cyan-100 transition-colors">{ip}</span>
               <button
                 onClick={() => removeWhitelistIp(ip)}
-                className="text-red-400 hover:text-red-300 transition-colors"
+                className="p-1.5 rounded-full text-gray-500 hover:bg-red-500/20 hover:text-red-400 transition-all"
               >
                 <Trash2 className="h-4 w-4" />
               </button>
