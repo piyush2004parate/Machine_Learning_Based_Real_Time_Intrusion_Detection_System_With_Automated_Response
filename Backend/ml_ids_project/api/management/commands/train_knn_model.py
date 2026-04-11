@@ -13,14 +13,14 @@ from api.utils.knn_classifier import KNNAnomalyDetector
 
 
 class Command(BaseCommand):
-    help = 'Train KNN anomaly detection model using UNSW dataset'
+    help = 'Train KNN anomaly detection model using CSE-CIC-IDS2018 dataset'
 
     def add_arguments(self, parser):
         parser.add_argument(
             '--data-path',
             type=str,
-            default='UNSW_Train_Test Datasets/UNSW_NB15_training-set.csv',
-            help='Path to UNSW training dataset'
+            default='CSE-CIC-IDS2018/Wednesday-14-02-2018_TrafficForML_CIC_IDS2018.csv',
+            help='Path to CSE-CIC-IDS2018 training dataset'
         )
         parser.add_argument(
             '--output-dir',
@@ -38,7 +38,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         data_path = options['data_path']
         output_dir = options['output_dir'] or os.path.join(
-            settings.BASE_DIR, '..', '..', 'model', 'unsw_tabular'
+            settings.BASE_DIR, '..', '..', '..', 'cic2018_model'
         )
         n_neighbors = options['n_neighbors']
 

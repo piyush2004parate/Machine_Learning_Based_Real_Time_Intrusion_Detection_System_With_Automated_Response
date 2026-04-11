@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Trigger the DB rule engine and action dispatcher using sample rows from the UNSW test set.
+Trigger the DB rule engine and action dispatcher using sample rows from the CSE-CIC-IDS2018 test set.
 This script runs inside the Django project context and calls `save_traffic_and_incidents` directly.
 """
 import os
@@ -16,23 +16,23 @@ from api.utils.knn_classifier import KNNAnomalyDetector
 from api.db_utils import save_traffic_and_incidents
 
 BASE = Path(__file__).parent
-DATASET = BASE / 'UNSW_Train_Test Datasets' / 'UNSW_NB15_testing-set.csv'
-MODEL_DIR = BASE.parent.parent / 'model' / 'unsw_tabular'
-MODEL_PATH = str(MODEL_DIR / 'model_knn.pkl')
-FEATURES_PATH = str(MODEL_DIR / 'features_knn.json')
-SCALER_PATH = str(MODEL_DIR / 'scaler_knn.pkl')
+DATASET = BASE.parent.parent.parent / 'CSE-CIC-IDS2018' / 'Wednesday-14-02-2018_TrafficForML_CIC_IDS2018.csv'
+MODEL_PATH = str(BASE.parent.parent.parent / 'knn_model_cic2018.pkl')
+FEATURES_PATH = None  # features embedded in model dict
+SCALER_PATH = str(BASE.parent.parent.parent / 'scaler_cic2018.pkl')
 
 print("Loading detector and dataset...")
 detector = KNNAnomalyDetector(MODEL_PATH, FEATURES_PATH, SCALER_PATH)
 df = pd.read_csv(str(DATASET))
 
 # Choose representative attack samples that match configured rules
+# CSE-CIC-IDS2018 uses 'Label' column with values like 'DoS attacks-Hulk', 'Bot', etc.
 targets = {
     'DoS': 1,
-    'Backdoor': 1,
-    'Reconnaissance': 1,
-    'Fuzzers': 1,
-    'Generic': 1,
+    'Bot': 1,
+    'Infiltration': 1,
+    'FTP-BruteForce': 1,
+    'SSH-Bruteforce': 1,
 }
 
 samples = []

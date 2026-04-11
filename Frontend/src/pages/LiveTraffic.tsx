@@ -80,6 +80,20 @@ export const LiveTraffic: React.FC = () => {
     };
   }, [showToast, isPaused]);
 
+  // Pre-load existing traffic records so the search works immediately on mount
+  useEffect(() => {
+    const proto = window.location.protocol === 'https:' ? 'https' : 'http';
+    const host = window.location.hostname;
+    fetch(`${proto}://${host}:8000/api/traffic/?limit=200`)
+      .then(res => res.ok ? res.json() : Promise.reject())
+      .then(data => {
+        if (Array.isArray(data) && data.length > 0) {
+          setTraffic(data.reverse()); // newest first
+        }
+      })
+      .catch(() => {}); // silent — live feed will populate anyway
+  }, []);
+
   const apiBase = `${window.location.protocol === 'https:' ? 'https' : 'http'}://${window.location.hostname}:8000/api`;
 
   const handleRefresh = async () => {
@@ -130,12 +144,16 @@ export const LiveTraffic: React.FC = () => {
     }
   };
 
-  const filteredTraffic = traffic.filter(t =>
-    (t.source_ip || '').includes(searchQuery) ||
-    (t.destination_ip || '').includes(searchQuery) ||
-    (t.protocol || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (t.status || '').toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const q = searchQuery.trim().toLowerCase();
+  const filteredTraffic = q === ''
+    ? traffic
+    : traffic.filter(t =>
+        (t.source_ip || '').toLowerCase().includes(q) ||
+        (t.destination_ip || '').toLowerCase().includes(q) ||
+        (t.protocol || '').toLowerCase().includes(q) ||
+        (t.status || '').toLowerCase().includes(q) ||
+        (t.severity || '').toLowerCase().includes(q)
+      );
 
   return (
     <div className="w-full">
