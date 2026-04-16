@@ -11,6 +11,7 @@ from scapy.all import sniff
 from scapy.layers.inet import IP, TCP, UDP
 from collections import defaultdict, deque
 import time
+import socket
 from asgiref.sync import sync_to_async
 
 def _port_to_service(port: int | None) -> str | None:
@@ -131,8 +132,23 @@ recent_events = deque(maxlen=10)
 live_buffer = deque(maxlen=1000)
 
 # Global tracker for detecting brute-force, DoS floods, or scanning across multiple fresh sockets.
-# key: source_ip -> {count: int, start_ts: float, unique_ports: set, banned_until: float}
-global_ip_connection_tracker = defaultdict(lambda: {"count": 0, "start_ts": 0.0, "unique_ports": set(), "udp_count": 0, "tcp_lengths": []})
+# key: source_ip -> {count: int, start_ts: float, unique_ports: set, banned_until: float, brute_attempts: int}
+global_ip_connection_tracker = defaultdict(lambda: {
+    "count": 0, "start_ts": 0.0, "unique_ports": set(), 
+    "udp_count": 0, "tcp_lengths": [], "brute_attempts": 0
+})
+
+# Host Whitelist: Detect local IPs to prevent "Self-Blocking" during attacks
+LOCAL_IPS = {"127.0.0.1", "localhost"}
+try:
+    hostname = socket.gethostname()
+    local_ip = socket.gethostbyname(hostname)
+    LOCAL_IPS.add(local_ip)
+    # Also attempt to get common LAN IPs if multi-homed
+    for ip in socket.gethostbyname_ex(hostname)[2]:
+        LOCAL_IPS.add(ip)
+except:
+    pass
 
 class TrafficConsumer(AsyncWebsocketConsumer):
     async def connect(self):
@@ -186,7 +202,8 @@ class TrafficConsumer(AsyncWebsocketConsumer):
                 # Late-Stage Purge: If overlapping packets were buffered into the queue BEFORE the firewall
                 # physical block was completed, drop them instantly here. This prevents the UI from slowly
                 # dripping 40 queued packets for 40 seconds straight, creating an illusion of an ongoing attack.
-                if data.get("source_ip") in getattr(self, "shared_blocked_ips", set()):
+                blocked_set = getattr(self, "shared_blocked_ips", set())
+                if data.get("source_ip") in blocked_set or data.get("destination_ip") in blocked_set:
                     continue
                     
                 # Send traffic to client (flat dict with top-level timestamp)
@@ -221,8 +238,9 @@ class TrafficConsumer(AsyncWebsocketConsumer):
                     return
                 ip_layer = pkt[IP]
                 
-                # Math Drop: Silently discard packets from identically shared `self.shared_blocked_ips`
-                if ip_layer.src in getattr(self, "shared_blocked_ips", set()):
+                # Math Drop: Silently discard ANY traffic (In or Out) related to blocked IPs
+                blocked_set = getattr(self, "shared_blocked_ips", set())
+                if ip_layer.src in blocked_set or ip_layer.dst in blocked_set:
                     return
 
                 if TCP in pkt:
@@ -355,10 +373,14 @@ class TrafficConsumer(AsyncWebsocketConsumer):
                 # Track global NEW connection rate per IP
                 # Normal web traffic opens 1-4 connections and sends hundreds of ACKs.
                 # DoS tools (like donisator) open dozens of isolated connections (SYNs).
+                # Persistent "High Alert" Status from previous packets
                 ip_tracker = global_ip_connection_tracker[ip_layer.src]
-                # Stateful Attack Detection
-                is_dos_flood = now_ts < ip_tracker.get("banned_until", 0.0)
-                is_port_scan = (now_ts < ip_tracker.get("banned_until", 0.0)) and (len(ip_tracker["unique_ports"]) >= 8)
+                is_on_alert = now_ts < ip_tracker.get("banned_until", 0.0)
+                
+                # Derive status from existing tracker state
+                is_port_scan = is_on_alert and (len(ip_tracker["unique_ports"]) >= 4)
+                is_brute_force = is_on_alert and (not is_port_scan) and (ip_tracker.get("brute_attempts", 0) > 5)
+                is_dos_flood = is_on_alert and (not is_port_scan) and (not is_brute_force) and (ip_tracker.get("count", 0) > 10)
 
                 if now_ts - ip_tracker["start_ts"] > 1.0:
                     ip_tracker["count"] = 0
@@ -371,12 +393,19 @@ class TrafficConsumer(AsyncWebsocketConsumer):
                 if dport:
                     ip_tracker["unique_ports"].add(dport)
                 
-                if len(ip_tracker["unique_ports"]) >= 8: 
-                    # If an IP hits >= 8 unique ports in a window, flag it as a scan
+                # Check for Port Scan Trigger
+                if len(ip_tracker["unique_ports"]) >= 4: 
                     if not is_port_scan:
                         print(f"[SECURITY] Port Scan Detected from {ip_layer.src} ({len(ip_tracker['unique_ports'])} unique ports)")
-                    ip_tracker["banned_until"] = now_ts + 30.0 # Long ban for reconnaissance
+                    ip_tracker["banned_until"] = now_ts + 30.0
                     is_port_scan = True
+                
+                # Brute-force Tracker (Repetitive login attempts to SSH/FTP)
+                if dport in (21, 22) and state == "SYN":
+                    ip_tracker["brute_attempts"] = ip_tracker.get("brute_attempts", 0) + 1
+                    if ip_tracker["brute_attempts"] > 5 and len(ip_tracker["unique_ports"]) < 4:
+                        ip_tracker["banned_until"] = now_ts + 30.0
+                        is_brute_force = True
                 
                 # TCP SYN Flood tracking (low threshold because SYNs should be rare)
                 if state == "SYN":
@@ -454,27 +483,10 @@ class TrafficConsumer(AsyncWebsocketConsumer):
                         # The CIC-IDS2018 model expects mature network flows. Single isolated packets 
                         # (like background keep-alives or ACKs) mathematically skew to False Positives.
                         is_trusted_bg = False
-                        
-                        # DISABLED for DoS Demo: Prevent ML False Positives on "Immature Flows"
-                        # if total_pkts < 4 and dur < 0.5:
-                        #     is_trusted_bg = True
                             
-                        # DISABLED for DoS Demo: Whitelist standard web/app ports without massive traffic spikes to prevent feedback loops
-                        # Ports: 53 (DNS), 68 (DHCP), 80 (HTTP), 443 (HTTPS), 8000 (Django WS), 5173 (Vite HMR)
-                        # if state in ["ACK", "FIN", "RST"] and rate < 500:
-                        #     if (dport in [53, 68, 80, 443, 8000, 5173] or sport in [53, 68, 80, 443, 8000, 5173]):
-                        #         is_trusted_bg = True
-                                
                         # Whitelist MDNS / Local Broadcasts (prevents MDNS being tagged as DoS)
                         if ip_layer.dst == "224.0.0.251" or ip_layer.dst == "255.255.255.255":
                             is_trusted_bg = True
-
-                        # Intra-LAN Noise Filter: Trust low-rate local traffic
-                        # Windows SMB/NetBios background chatter (150-byte pings) often gets tagged as DoS by ML
-                        # DISABLED: User is running a slow DoS attack (e.g., 26 pkts/sec) that gets caught by this filter.
-                        # if ip_layer.src.startswith(("192.168.", "10.", "172.")) and ip_layer.dst.startswith(("192.168.", "10.", "172.")):
-                        #     if rate < 50 and total_pkts < 100:
-                        #         is_trusted_bg = True
 
                         if is_trusted_bg:
                             result = {
@@ -488,14 +500,27 @@ class TrafficConsumer(AsyncWebsocketConsumer):
                         pred_label = result.get('label', 'Normal')
                         pred_prob = result.get('confidence', 0.0)
                         
-                        # Override ML for high-rate connection floods
-                        # Flow-based models (like CIC-IDS2018) often predict 'Benign' for 1-packet DoS flows.
-                        # Reduced threshold to 10 to match the very slow rate (~16 pkts/sec) generated by donisator.py
-                        if is_dos_flood or is_port_scan:
-                            pred_label = "Port_Scanning" if is_port_scan else "DoS"
+                        # Override ML for high-rate connection floods or repetitive login attempts
+                        # Priority: 1. Port Scanning (Vertical Recon), 2. Brute-force (Credential Attack), 3. DoS (Volume Flood)
+                        if is_port_scan or is_brute_force or is_dos_flood:
+                            if is_port_scan:
+                                pred_label = "Port_Scanning"
+                            elif is_brute_force:
+                                pred_label = "Brute-force"
+                            else:
+                                pred_label = "DoS"
+                                
                             result['label'] = pred_label
                             pred_prob = 1.0
                             result['prediction'] = 1
+                        
+                        # HOST WHITELIST: If the traffic is coming FROM this machine, treat as Benign 
+                        # to prevent flagging defensive responses as attacks.
+                        if ip_layer.src in LOCAL_IPS:
+                            pred_label = "Benign"
+                            result['label'] = "Benign"
+                            pred_prob = 0.99
+                            result['prediction'] = 0
                         
                         # Refined False Positive Suppression:
                         if pred_label not in ("Normal", "Benign"):
@@ -603,6 +628,11 @@ class TrafficConsumer(AsyncWebsocketConsumer):
                     pass
 
                 # Enqueue for async, throttled sending on the main loop
+                # Buffer Limit: If the queue is backed up (e.g. during a flood), discard old packets 
+                # to ensure the dashboard remains "Live" and doesn't get stuck in the past.
+                if self.out_queue.qsize() > 100:
+                    return
+
                 try:
                     asyncio.run_coroutine_threadsafe(
                         self.out_queue.put(data), self.main_loop

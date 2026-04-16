@@ -37,18 +37,25 @@ def block_ip(incident) -> dict:
         return {'result': 'ok', 'ip': ip, 'status': 'already_blocked'}
         
     try:
-        # Run a command to block the IP in Windows Firewall
-        # Action requires the Python process to run as Administrator
-        command = f'netsh advfirewall firewall add rule name="IDS_Block_{ip}" dir=in interface=any action=block remoteip={ip}'
-        subprocess.run(command, shell=True, capture_output=True, check=True)
+        # Step 1: Block INBOUND (Attacker -> You)
+        cmd_in = f'netsh advfirewall firewall add rule name="IDS_Block_IN_{ip}" dir=in interface=any action=block remoteip={ip}'
+        subprocess.run(cmd_in, shell=True, capture_output=True, check=True)
+        
+        # Step 2: Block OUTBOUND (You -> Attacker)
+        # This stops the host from sending defensive responses/ACKs to the blocked IP
+        cmd_out = f'netsh advfirewall firewall add rule name="IDS_Block_OUT_{ip}" dir=out interface=any action=block remoteip={ip}'
+        subprocess.run(cmd_out, shell=True, capture_output=True, check=True)
         
         _BLOCKED_IPS_CACHE.add(ip)
-        _append_log('blocked_ips.txt', f'Actually Blocked IP via Windows Firewall: {ip}')
-        _append_log('actions.log', f"Block IP executed securely in Windows Firewall for {ip}")
-        return {'result': 'ok', 'ip': ip, 'status': 'blocked_in_firewall'}
+        _append_log('blocked_ips.txt', f'Actually Blocked IP (In/Out) via Windows Firewall: {ip}')
+        _append_log('actions.log', f"FULL ISOLATION executed securely in Windows Firewall for {ip}")
+        return {'result': 'ok', 'ip': ip, 'status': 'isolated_in_firewall'}
     except subprocess.CalledProcessError as e:
         err_msg = e.stderr.decode() if e.stderr else str(e)
-        _append_log('actions.log', f"Failed to block IP {ip} in Windows Firewall. Did you run as Admin? Error: {err_msg}")
+        if "requires elevation" in err_msg.lower() or "administrator" in err_msg.lower() or e.returncode == 1:
+            _append_log('actions.log', f"CRITICAL: Permission Denied blocking {ip}. RUN BACKEND AS ADMINISTRATOR.")
+            return {'result': 'failed', 'reason': 'requires_admin_privileges', 'details': 'Please run the Python Backend as Administrator'}
+        _append_log('actions.log', f"Failed to block IP {ip} in Windows Firewall. Error: {err_msg}")
         return {'result': 'failed', 'reason': 'firewall_command_failed', 'details': err_msg}
     except Exception as e:
         _append_log('actions.log', f"Failed to execute firewall command for {ip}: {e}")
@@ -59,9 +66,9 @@ def unblock_ip(ip: str) -> dict:
         return {'result': 'failed', 'reason': 'no source_ip'}
         
     try:
-        # Run a command to unblock the IP in Windows Firewall
-        command = f'netsh advfirewall firewall delete rule name="IDS_Block_{ip}"'
-        subprocess.run(command, shell=True, capture_output=True, check=True)
+        # Remove both Inbound and Outbound rules
+        subprocess.run(f'netsh advfirewall firewall delete rule name="IDS_Block_IN_{ip}"', shell=True, capture_output=True)
+        subprocess.run(f'netsh advfirewall firewall delete rule name="IDS_Block_OUT_{ip}"', shell=True, capture_output=True)
         
         if ip in _BLOCKED_IPS_CACHE:
             _BLOCKED_IPS_CACHE.remove(ip)
