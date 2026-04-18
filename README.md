@@ -69,3 +69,17 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 ## 🎓 Academic Contribution
 
 This project was developed as a final-year engineering thesis. It bridges the gap between theoretical ML research and practical, low-latency cybersecurity software engineering.
+
+**Full Report Chapters:**
+- [Abstract](documentation/abstract.md)
+- [Table of Contents](documentation/table_of_contents.md)
+- [Chapter 1: Introduction](documentation/chapter1_introduction.md)
+- [Chapter 2: Literature Review](documentation/chapter2_literature_review.md)
+- [Chapter 3: Methodology](documentation/chapter3_methodology.md)
+- [Chapter 4: System Implementation](documentation/chapter4_system_implementation.md)
+- [Chapter 5: Results and Discussion](documentation/chapter5_results_and_discussion.md)
+- [Chapter 6: Conclusion and Future Scope](documentation/chapter6_conclusion_and_future_scope.md)
+
+---
+
+*Developed by the SecureWatch Team — 2026*
